@@ -178,32 +178,43 @@ class QueueWriter:
                 pass
 
 
-def create_driver():
-    # Try Chrome first
-    try:
+def create_driver(preferred: str = 'chrome'):
+    """Create a webdriver instance. preferred: 'chrome' or 'edge'. Will try fallback if preferred is unavailable."""
+    preferred = (preferred or 'chrome').lower()
+    def try_chrome():
         chrome_opts = webdriver.ChromeOptions()
         chrome_opts.add_argument('--start-maximized')
-        # Uncomment the next line to run headless (without visible browser)
         # chrome_opts.add_argument('--headless')
-        driver = webdriver.Chrome(options=chrome_opts)
-        print('Using Google Chrome for automation')
-        return driver
-    except WebDriverException as e:
-        print(f'Chrome not available or failed to start: {e}')
-        print('Attempting to start Microsoft Edge...')
+        return webdriver.Chrome(options=chrome_opts)
+
+    def try_edge():
+        edge_opts = webdriver.EdgeOptions()
+        edge_opts.add_argument('--start-maximized')
+        # edge_opts.add_argument('--headless')
+        return webdriver.Edge(options=edge_opts)
+
+    # order of attempts based on preference
+    attempts = []
+    if preferred == 'edge':
+        attempts = [('edge', try_edge), ('chrome', try_chrome)]
+    else:
+        attempts = [('chrome', try_chrome), ('edge', try_edge)]
+
+    last_exc = None
+    for name, fn in attempts:
         try:
-            edge_opts = webdriver.EdgeOptions()
-            edge_opts.add_argument('--start-maximized')
-            # edge_opts.add_argument('--headless')
-            driver = webdriver.Edge(options=edge_opts)
-            print('Using Microsoft Edge for automation')
+            driver = fn()
+            print(f'Using {"Google Chrome" if name=="chrome" else "Microsoft Edge"} for automation')
             return driver
-        except WebDriverException as e2:
-            print(f'Edge also failed to start: {e2}')
-            raise RuntimeError('Could not start Chrome or Edge. Please install a supported browser or check your Selenium setup.')
+        except WebDriverException as e:
+            print(f'{name.capitalize()} not available or failed to start: {e}')
+            last_exc = e
+
+    # if we get here, none succeeded
+    raise RuntimeError('Could not start Chrome or Edge. Please install a supported browser or check your Selenium setup.') from last_exc
 
 
-def run_evaluation(username, password, log_q: queue.Queue, progress_q: queue.Queue, stop_event: threading.Event):
+def run_evaluation(username, password, log_q: queue.Queue, progress_q: queue.Queue, stop_event: threading.Event, preferred_browser: str = 'chrome'):
     """Background worker that runs the evaluation flow and posts logs/progress to queues."""
     orig_stdout = sys.stdout
     writer = QueueWriter(log_q, orig=orig_stdout)
@@ -211,7 +222,7 @@ def run_evaluation(username, password, log_q: queue.Queue, progress_q: queue.Que
         with contextlib.redirect_stdout(writer):
             print('\nInitializing browser...')
             try:
-                driver = create_driver()
+                driver = create_driver(preferred=preferred_browser)
             except Exception as e:
                 print(f'Failed to start a browser: {e}')
                 progress_q.put(('error', 'No browser available'))
@@ -293,6 +304,14 @@ def gui_main():
     password_var = tk.StringVar()
     tk.Entry(frame, textvariable=password_var, show='*', width=40).grid(row=1, column=1, sticky='w')
 
+    # Browser preference
+    tk.Label(frame, text='Browser:').grid(row=2, column=0, sticky='w')
+    browser_var = tk.StringVar(value='chrome')
+    browser_frame = tk.Frame(frame)
+    browser_frame.grid(row=2, column=1, sticky='w')
+    tk.Radiobutton(browser_frame, text='Google Chrome', variable=browser_var, value='chrome').pack(side='left')
+    tk.Radiobutton(browser_frame, text='Microsoft Edge', variable=browser_var, value='edge').pack(side='left')
+
     btn_frame = tk.Frame(root)
     btn_frame.pack(padx=8, pady=(0,8), fill='x')
 
@@ -356,8 +375,10 @@ def gui_main():
         log_box.configure(state='disabled')
         progress_label.config(text='Evaluations completed: 0')
 
+        # start background worker
         stop_event = threading.Event()
-        worker_thread = threading.Thread(target=run_evaluation, args=(username, password, log_q, progress_q, stop_event), daemon=True)
+        preferred_browser = browser_var.get()
+        worker_thread = threading.Thread(target=run_evaluation, args=(username, password, log_q, progress_q, stop_event, preferred_browser), daemon=True)
         worker_thread.start()
 
     def on_stop():
