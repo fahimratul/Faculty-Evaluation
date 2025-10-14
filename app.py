@@ -10,6 +10,8 @@ import contextlib
 import sys
 import tkinter as tk
 from tkinter.scrolledtext import ScrolledText
+from tkinter import ttk
+import random
 
 def login(driver, username, password):
     """Login to the student portal"""
@@ -96,16 +98,44 @@ def evaluate_faculty(driver, faculty_name):
             WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.ID, "evaluate_form"))
             )
-            
+                        # List of possible comments and recommendations
+            comments_list = [
+                "Good performance overall",
+                "Very helpful and knowledgeable.",
+                "Explains concepts clearly.",
+                "Supportive and approachable.",
+                "Makes learning interesting.",
+                "Excellent teaching style.",
+                "Engages students effectively.",
+                "Always willing to help.",
+                "Great communication skills.",
+                "Creates a positive environment."
+            ]
+            recommendations_list = [
+                "Keep up the good work",
+                "Continue to motivate students",
+                "Maintain current teaching methods",
+                "Encourage more student participation",
+                "Provide more real-life examples",
+                "Give more feedback on assignments",
+                "Organize more interactive sessions",
+                "Use more visual aids",
+                "Be available for extra help",
+                "Keep improving"
+            ]
+            # Randomly select a comment and recommendation
+            comment = random.choice(comments_list)
+            recommendation = random.choice(recommendations_list)
+
             # Fill overall comments
             comments_field = driver.find_element(By.NAME, "comments")
             comments_field.clear()
-            comments_field.send_keys("Good performance overall. N/A")
+            comments_field.send_keys(comment)
             
             # Fill recommendations
             recommendations_field = driver.find_element(By.NAME, "recommendations")
             recommendations_field.clear()
-            recommendations_field.send_keys("Keep up the good work. N/A")
+            recommendations_field.send_keys(recommendation)
             
             print("  Filled comments and recommendations")
             time.sleep(0.5)
@@ -241,9 +271,14 @@ def run_evaluation(username, password, log_q: queue.Queue, progress_q: queue.Que
 
                 # Process evaluations
                 total_evaluated = 0
+
+                # Determine total faculty to evaluate (initial snapshot)
+                faculty_list = get_faculty_list(driver)
+                total_faculty = len(faculty_list)
+                progress_q.put(('total', total_faculty))
+
                 while not stop_event.is_set():
                     print('\nChecking for faculty members to evaluate...')
-
                     faculty_list = get_faculty_list(driver)
                     if not faculty_list:
                         print('\n✓ All faculty evaluations completed!')
@@ -260,6 +295,7 @@ def run_evaluation(username, password, log_q: queue.Queue, progress_q: queue.Que
                     success = evaluate_faculty(driver, faculty_name)
                     if success:
                         total_evaluated += 1
+                        # notify progress (completed count)
                         progress_q.put(('progress', total_evaluated))
                         print(f'Progress: {total_evaluated} evaluation(s) completed')
 
@@ -315,13 +351,28 @@ def gui_main():
     btn_frame = tk.Frame(root)
     btn_frame.pack(padx=8, pady=(0,8), fill='x')
 
-    start_btn = tk.Button(btn_frame, text='Start', width=12)
-    stop_btn = tk.Button(btn_frame, text='Stop', width=12, state='disabled')
+    # Use ttk for nicer buttons and progressbar
+    style = ttk.Style()
+    try:
+        style.theme_use('clam')
+    except Exception:
+        pass
+    style.configure('Accent.TButton', foreground='white', background='#4a90e2', padding=6)
+    style.map('Accent.TButton', background=[('active', '#357ab8')])
+
+    start_btn = ttk.Button(btn_frame, text='Start', width=12, style='Accent.TButton')
+    stop_btn = ttk.Button(btn_frame, text='Stop', width=12, state='disabled')
     start_btn.pack(side='left', padx=(0,8))
     stop_btn.pack(side='left')
 
     progress_label = tk.Label(btn_frame, text='Evaluations completed: 0')
     progress_label.pack(side='left', padx=12)
+
+    # Progress bar (determinate) and percentage
+    progressbar = ttk.Progressbar(btn_frame, orient='horizontal', length=240, mode='determinate')
+    progressbar.pack(side='left', padx=(8,4))
+    percent_label = tk.Label(btn_frame, text='0%')
+    percent_label.pack(side='left')
 
     log_box = ScrolledText(root, state='disabled', height=20)
     log_box.pack(padx=8, pady=4, fill='both', expand=True)
@@ -346,15 +397,42 @@ def gui_main():
             pass
 
         try:
+            total = getattr(poll_queues, '_total', None)
+            completed = getattr(poll_queues, '_completed', 0)
             while True:
                 item = progress_q.get_nowait()
                 if isinstance(item, tuple) and item[0] == 'error':
                     append_log('ERROR: ' + str(item[1]))
+                elif isinstance(item, tuple) and item[0] == 'total':
+                    # total number of faculty (for percent calculation)
+                    poll_queues._total = int(item[1]) if item[1] is not None else 0
+                    total = poll_queues._total
+                    # reset progressbar
+                    progressbar['value'] = 0
+                    percent_label.config(text='0%')
+                    progress_label.config(text=f'Evaluations completed: 0')
                 elif isinstance(item, tuple) and item[0] == 'progress':
-                    progress_label.config(text=f'Evaluations completed: {item[1]}')
+                    completed = int(item[1])
+                    poll_queues._completed = completed
+                    progress_label.config(text=f'Evaluations completed: {completed}')
+                    # update percentage if total known
+                    if total and total > 0:
+                        pct = int((completed / total) * 100)
+                        progressbar['maximum'] = 100
+                        progressbar['value'] = pct
+                        percent_label.config(text=f'{pct}%')
+                    else:
+                        # Unknown total: just pulse progressbar
+                        progressbar.config(mode='indeterminate')
+                        try:
+                            progressbar.start(10)
+                        except Exception:
+                            pass
                 else:
-                    # numbers only
-                    progress_label.config(text=f'Evaluations completed: {item}')
+                    # numbers only (legacy)
+                    completed = int(item)
+                    poll_queues._completed = completed
+                    progress_label.config(text=f'Evaluations completed: {completed}')
         except queue.Empty:
             pass
 
